@@ -1,27 +1,20 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 require('dotenv').config();
 
-// Ensure API key is configured or fallback to run in safe/mock mode if missing
-const apiKey = process.env.GEMINI_API_KEY;
-const genAI = apiKey && apiKey !== 'YOUR_GEMINI_API_KEY_HERE' ? new GoogleGenerativeAI(apiKey) : null;
+// Initialize AI clients based on keys configured in .env
+const geminiKey = process.env.GEMINI_API_KEY;
+const openaiKey = process.env.OPENAI_API_KEY;
+
+const genAI = geminiKey && geminiKey !== 'YOUR_GEMINI_API_KEY_HERE' ? new GoogleGenerativeAI(geminiKey) : null;
+const openai = openaiKey && openaiKey !== 'YOUR_OPENAI_API_KEY_HERE' ? new OpenAI({ apiKey: openaiKey }) : null;
 
 /**
  * Natural Language Segmentation helper.
  * Translates a user description to DB rules and a parameterized SQL query.
  */
 async function generateSegmentRules(promptText) {
-  if (!genAI) {
-    console.warn('Gemini API key is not configured. Returning fallback static segment translation.');
-    return getFallbackSegment(promptText);
-  }
-
-  try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      generationConfig: { responseMimeType: 'application/json' }
-    });
-
-    const systemPrompt = `You are a MySQL database and AI marketing engineer.
+  const systemPrompt = `You are a MySQL database and AI marketing engineer.
 Your job is to translate a brand user's natural language segmentation prompt into a structured filters rules array, a parameterized SQL query, and query parameters.
 
 Database Schema:
@@ -46,17 +39,46 @@ Response JSON Schema:
   "rules": [ { "field": "field_name", "operator": "op", "value": "val" } ],
   "sql_query": "SELECT id FROM customers WHERE ...",
   "sql_params": [value1, value2]
-}
+}`;
 
-Translate this query: "${promptText}"`;
-
-    const result = await model.generateContent(systemPrompt);
-    const text = result.response.text();
-    return JSON.parse(text);
-  } catch (error) {
-    console.error('Gemini AI Segmentation Error:', error);
-    return getFallbackSegment(promptText);
+  // Priority 1: OpenAI GPT-4o-mini
+  if (openai) {
+    try {
+      console.log('[AI SERVICE] Routing segmentation translation request to OpenAI (gpt-4o-mini)...');
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Translate this query: "${promptText}"` }
+        ],
+        response_format: { type: 'json_object' }
+      });
+      return JSON.parse(response.choices[0].message.content);
+    } catch (error) {
+      console.error('OpenAI Segmentation Error:', error.message);
+      return getFallbackSegment(promptText);
+    }
   }
+
+  // Priority 2: Google Gemini (gemini-1.5-flash)
+  if (genAI) {
+    try {
+      console.log('[AI SERVICE] Routing segmentation translation request to Gemini (gemini-1.5-flash)...');
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-1.5-flash',
+        generationConfig: { responseMimeType: 'application/json' }
+      });
+      const result = await model.generateContent(`${systemPrompt}\n\nTranslate this query: "${promptText}"`);
+      return JSON.parse(result.response.text());
+    } catch (error) {
+      console.error('Gemini AI Segmentation Error:', error.message);
+      return getFallbackSegment(promptText);
+    }
+  }
+
+  // Fallback: Offline Mock translation
+  console.warn('[AI SERVICE] No AI API keys configured. Executing offline segment fallbacks...');
+  return getFallbackSegment(promptText);
 }
 
 /**
@@ -64,43 +86,64 @@ Translate this query: "${promptText}"`;
  * Generates subject line and body templates with placeholders.
  */
 async function generateCampaignCopy(prompt, segmentName, tone) {
-  if (!genAI) {
-    console.warn('Gemini API key is not configured. Returning fallback static copy suggestion.');
-    return getFallbackCopy(prompt, segmentName, tone);
-  }
-
-  try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      generationConfig: { responseMimeType: 'application/json' }
-    });
-
-    const systemPrompt = `You are a copywriting expert and product marketer.
-Generate three campaign template variations containing a "subject_line" and "message_template" based on:
-1. Goal Prompt: "${prompt}"
-2. Segment Name: "${segmentName}"
-3. Tone: "${tone}"
+  const systemPrompt = `You are a copywriting expert and product marketer.
+Generate three campaign template variations containing a "subject_line" and "message_template" based on the goal prompt, segment, and tone.
 
 Guidelines:
 - Personalize content using handlebar syntax fields. Available fields: {{first_name}}, {{last_name}}, {{location}}.
 - Make the writing engaging, professional, and matching the requested tone.
-- Return the output strictly as a JSON array of objects.
+- Return the output strictly as a JSON object containing a "variations" array of objects.
 
 Response JSON Schema:
-[
-  {
-    "subject_line": "Subject template here",
-    "message_template": "Body text template here"
-  }
-]`;
+{
+  "variations": [
+    {
+      "subject_line": "Subject template here",
+      "message_template": "Body text template here"
+    }
+  ]
+}`;
 
-    const result = await model.generateContent(systemPrompt);
-    const text = result.response.text();
-    return JSON.parse(text);
-  } catch (error) {
-    console.error('Gemini AI Copywriting Error:', error);
-    return [getFallbackCopy(prompt, segmentName, tone)];
+  // Priority 1: OpenAI GPT-4o-mini
+  if (openai) {
+    try {
+      console.log('[AI SERVICE] Routing campaign copywriting request to OpenAI (gpt-4o-mini)...');
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Generate copies for: Goal="${prompt}", Segment="${segmentName}", Tone="${tone}"` }
+        ],
+        response_format: { type: 'json_object' }
+      });
+      const data = JSON.parse(response.choices[0].message.content);
+      return data.variations || data;
+    } catch (error) {
+      console.error('OpenAI Copywriting Error:', error.message);
+      return [getFallbackCopy(prompt, segmentName, tone)];
+    }
   }
+
+  // Priority 2: Google Gemini (gemini-1.5-flash)
+  if (genAI) {
+    try {
+      console.log('[AI SERVICE] Routing campaign copywriting request to Gemini (gemini-1.5-flash)...');
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-1.5-flash',
+        generationConfig: { responseMimeType: 'application/json' }
+      });
+      const result = await model.generateContent(`${systemPrompt}\n\nGenerate copies for: Goal="${prompt}", Segment="${segmentName}", Tone="${tone}"`);
+      const data = JSON.parse(result.response.text());
+      return data.variations || data;
+    } catch (error) {
+      console.error('Gemini AI Copywriting Error:', error.message);
+      return [getFallbackCopy(prompt, segmentName, tone)];
+    }
+  }
+
+  // Fallback: Offline copy drafts suggestion
+  console.warn('[AI SERVICE] No AI API keys configured. Executing offline copywriting fallbacks...');
+  return [getFallbackCopy(prompt, segmentName, tone)];
 }
 
 /**
@@ -108,18 +151,7 @@ Response JSON Schema:
  * Summarizes metrics and provides suggestions.
  */
 async function generateAnalyticsInsights(campaignData) {
-  if (!genAI) {
-    console.warn('Gemini API key is not configured. Returning fallback marketing review.');
-    return getFallbackInsights(campaignData);
-  }
-
-  try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      generationConfig: { responseMimeType: 'application/json' }
-    });
-
-    const systemPrompt = `You are an expert Chief Marketing Officer (CMO) and analytics advisor.
+  const systemPrompt = `You are an expert Chief Marketing Officer (CMO) and analytics advisor.
 Review the following metrics for the completed campaign:
 - Campaign Name: ${campaignData.name}
 - Audience Segment: ${campaignData.segment_name}
@@ -147,13 +179,43 @@ Response JSON Schema:
   ]
 }`;
 
-    const result = await model.generateContent(systemPrompt);
-    const text = result.response.text();
-    return JSON.parse(text);
-  } catch (error) {
-    console.error('Gemini AI Insights Error:', error);
-    return getFallbackInsights(campaignData);
+  // Priority 1: OpenAI GPT-4o-mini
+  if (openai) {
+    try {
+      console.log('[AI SERVICE] Routing analytics insights request to OpenAI (gpt-4o-mini)...');
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt }
+        ],
+        response_format: { type: 'json_object' }
+      });
+      return JSON.parse(response.choices[0].message.content);
+    } catch (error) {
+      console.error('OpenAI Insights Error:', error.message);
+      return getFallbackInsights(campaignData);
+    }
   }
+
+  // Priority 2: Google Gemini (gemini-1.5-flash)
+  if (genAI) {
+    try {
+      console.log('[AI SERVICE] Routing analytics insights request to Gemini (gemini-1.5-flash)...');
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-1.5-flash',
+        generationConfig: { responseMimeType: 'application/json' }
+      });
+      const result = await model.generateContent(systemPrompt);
+      return JSON.parse(result.response.text());
+    } catch (error) {
+      console.error('Gemini AI Insights Error:', error.message);
+      return getFallbackInsights(campaignData);
+    }
+  }
+
+  // Fallback: Offline marketing reviews
+  console.warn('[AI SERVICE] No AI API keys configured. Executing offline insights fallbacks...');
+  return getFallbackInsights(campaignData);
 }
 
 // ==========================================
@@ -189,7 +251,6 @@ function getFallbackSegment(promptText) {
     };
   }
 
-  // General fallback: return all customers
   return {
     rules: [],
     sql_query: "SELECT id FROM customers WHERE 1 = 1",
