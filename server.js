@@ -15,18 +15,6 @@ app.get('/ping', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date(), service: 'CRM Backend' });
 });
 
-// Debug tables endpoint
-const db = require('./config/database');
-app.get('/debug/tables', async (req, res) => {
-  try {
-    const result = await db.raw('SHOW TABLES');
-    res.json({ success: true, tables: result[0] || result });
-  } catch (err) {
-    console.error('Debug tables error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // Load routes
 app.use('/api', apiRoutes);
 
